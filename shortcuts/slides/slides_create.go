@@ -23,6 +23,22 @@ const (
 )
 
 // SlidesCreate creates a new Lark Slides presentation with bot auto-grant.
+//
+// The pages travel with the create call rather than following it one at a time.
+// That is what makes the deck all-or-nothing: the backend lints the document it
+// is handed, so every page is judged in one pass, the findings name real page
+// numbers, and a deck with a bad page anywhere is refused before a presentation
+// exists. Adding the pages afterwards meant the opposite — page 4 could be
+// rejected with pages 1 to 3 already on the server and a presentation the caller
+// had to go clean up.
+//
+// The create call stores the page count and drops the page bodies, so a second
+// pass fills them in. Those calls do not re-lint: their content is part of the
+// document that was just accepted.
+//
+// Decks with @path image placeholders are the exception, and cannot be anything
+// else: each upload attaches its file to an existing presentation, so the pages
+// are not final until the deck exists. Those keep the per-page path.
 var SlidesCreate = common.Shortcut{
 	Service:     "slides",
 	Command:     "+create",
@@ -44,6 +60,7 @@ var SlidesCreate = common.Shortcut{
 		// by the framework, so it is not spelled out in Desc.
 		{Name: "slides", Desc: "slide content JSON array (each element is a <slide> XML string, max 10; for more pages, create first then add them one at a time with slides +add-slide). <img src=\"@./local.png\"> placeholders are auto-uploaded and replaced with file_token.", Input: []string{common.File, common.Stdin}},
 		{Name: "slide", Type: "string_array", Desc: "one complete <slide> XML document, or @path to read one from a file; repeat once per page (max 10) and the CLI assembles the array for you, so no JSON escaping is needed. <img src=\"@./local.png\"> placeholders are handled as with --slides. Mutually exclusive with --slides."},
+		noLintFlag(),
 	},
 	Validate: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		slides, param, err := createSlideContents(runtime)
@@ -66,16 +83,41 @@ var SlidesCreate = common.Shortcut{
 		createBody := map[string]interface{}{
 			"xml_presentation": map[string]interface{}{"content": buildPresentationXML(title)},
 		}
+		placeholders := extractImagePlaceholderPaths(slides)
+
+		// The note belongs to the create step, which is what the grant follows.
+		// Adding it at the end instead would land on whichever step happened to
+		// be last and overwrite that step's own description.
+		botNote := ""
+		if runtime.IsBot() {
+			botNote = " After creation succeeds in bot mode, the CLI will also try to grant the current CLI user full_access on the new presentation."
+		}
 
 		dry := common.NewDryRunAPI()
 
-		if len(slides) == 0 {
+		switch {
+		case len(slides) == 0:
 			dry.Desc("Create empty presentation").
 				POST("/open-apis/slides_ai/v1/xml_presentations").
+				Desc(strings.TrimSpace(botNote)).
 				Body(createBody)
-		} else {
+		case createsWholeDeck(slides, placeholders):
 			n := len(slides)
-			placeholders := extractImagePlaceholderPaths(slides)
+			total := n + 1
+			dry.Desc(fmt.Sprintf("Create presentation with all %d page(s) in one call, then fill them", n)).
+				POST("/open-apis/slides_ai/v1/xml_presentations").
+				Desc(fmt.Sprintf("[1/%d] Create presentation; the backend lints all %d page(s) as one document and stores nothing unless every page passes.%s", total, n, botNote)).
+				Body(withLintXML(map[string]interface{}{
+					"xml_presentation": map[string]interface{}{"content": buildPresentationXML(title, slides...)},
+				}, runtime))
+			for i := range slides {
+				dry.POST(slideReplaceAPIPath("<xml_presentation_id>")).
+					Desc(fmt.Sprintf("[%d/%d] Fill page %d (already validated by step 1, so this call does not re-lint)", i+2, total, i+1)).
+					Params(createFillQuery("<slide_id>")).
+					Body(createFillBody("<slide_id>", slides[i]))
+			}
+		default:
+			n := len(slides)
 			total := n + 1 + len(placeholders)
 
 			descSuffix := ""
@@ -84,7 +126,7 @@ var SlidesCreate = common.Shortcut{
 			}
 			dry.Desc(fmt.Sprintf("Create presentation%s + add %d slide(s)", descSuffix, n)).
 				POST("/open-apis/slides_ai/v1/xml_presentations").
-				Desc(fmt.Sprintf("[1/%d] Create presentation", total)).
+				Desc(fmt.Sprintf("[1/%d] Create presentation.%s", total, botNote)).
 				Body(createBody)
 
 			// Upload steps come right after creation so they can use the new
@@ -101,39 +143,53 @@ var SlidesCreate = common.Shortcut{
 			for i, slideXML := range slides {
 				dry.POST("/open-apis/slides_ai/v1/xml_presentations/<xml_presentation_id>/slide").
 					Desc(fmt.Sprintf("[%d/%d] Add slide %d%s", slideStepStart+i, total, i+1, slideDescSuffix)).
-					Body(map[string]interface{}{
-						"slide": map[string]interface{}{"content": slideXML},
-					})
+					Params(createSlideQuery()).
+					Body(createSlideBody(slideXML, runtime))
 			}
 		}
 
-		if runtime.IsBot() {
-			dry.Desc("After creation succeeds in bot mode, the CLI will also try to grant the current CLI user full_access on the new presentation.")
-		}
 		return dry
 	},
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		title := effectiveTitle(runtime.Str("title"))
-		content := buildPresentationXML(title)
 		// Resolve @path inputs before the create call: a bad path must not leave
 		// an orphaned empty presentation behind.
 		slides, param, err := createSlideContents(runtime)
 		if err != nil {
 			return err
 		}
+		placeholders := extractImagePlaceholderPaths(slides)
+		wholeDeck := createsWholeDeck(slides, placeholders)
 
-		// Step 1: Create presentation
+		// Step 1: Create presentation. When the pages can travel with it, they do:
+		// the backend then lints the deck as one document and stores nothing unless
+		// every page passes, so a refusal leaves no presentation to clean up and
+		// reports every bad page at once instead of stopping at the first.
+		content := buildPresentationXML(title)
+		createBody := map[string]interface{}{
+			"xml_presentation": map[string]interface{}{"content": content},
+		}
+		if wholeDeck {
+			content = buildPresentationXML(title, slides...)
+			createBody = withLintXML(map[string]interface{}{
+				"xml_presentation": map[string]interface{}{"content": content},
+			}, runtime)
+		}
 		data, err := runtime.CallAPITyped(
 			"POST",
 			"/open-apis/slides_ai/v1/xml_presentations",
 			nil,
-			map[string]interface{}{
-				"xml_presentation": map[string]interface{}{
-					"content": content,
-				},
-			},
+			createBody,
 		)
 		if err != nil {
+			err = enrichSlidesLintError(err)
+			if wholeDeck {
+				// Said outright rather than left to the absence of a progress note.
+				// The lint hint is worded for the paths where a page is refused
+				// against a deck that already exists, and a caller who has seen that
+				// wording has no reason to assume this run left nothing behind.
+				err = appendSlidesProgressHint(err, "no presentation was created, so there is nothing to clean up before retrying")
+			}
 			return err
 		}
 
@@ -153,12 +209,49 @@ var SlidesCreate = common.Shortcut{
 			result["issues"] = issues
 		}
 
-		// Step 2: Add slides if provided
-		if len(slides) > 0 {
+		// Step 2: put the page content in place.
+		//
+		// The deck that came back from a whole-deck create already has one page per
+		// submitted page, but they are empty: the create path stores the page count
+		// and drops the children. So the pages are filled here, in the order they
+		// were submitted, against the ids the create returned.
+		if wholeDeck {
+			ids, err := createdSlideIDs(data, len(slides))
+			if err != nil {
+				return appendSlidesProgressHint(err, fmt.Sprintf("presentation %s exists at %s", presentationID, common.GetString(data, "url")))
+			}
+			for i, slideXML := range slides {
+				stamped, err := ensureXMLRootID(slideXML, ids[i])
+				if err != nil {
+					// createSlideContents already proved each page is a single
+					// <slide> root, so the only remaining failure is a root spelling
+					// the stamper cannot rewrite, such as <sml:slide>.
+					return appendSlidesProgressHint(
+						errs.NewValidationError(errs.SubtypeInvalidArgument,
+							"%s: page %d root <slide> is written in a form the page id cannot be attached to"+
+								" (a namespace prefix such as <sml:slide> does this); write it as <slide> and declare"+
+								" the namespace with a default xmlns if you need one", param, i+1).
+							WithParam(param).WithCause(err),
+						fmt.Sprintf("presentation %s was created with %d empty page(s)", presentationID, len(ids)))
+				}
+				if _, err := runtime.CallAPITyped("POST", slideReplaceAPIPath(presentationID),
+					createFillQuery(ids[i]), createFillBody(ids[i], stamped)); err != nil {
+					return appendSlidesProgressHint(err, fmt.Sprintf(
+						"the deck passed validation and presentation %s was created with %d page(s), but page %d/%d could not be filled; %d page(s) are still empty",
+						presentationID, len(ids), i+1, len(slides), len(slides)-i))
+				}
+			}
+			result["slide_ids"] = ids
+			result["slides_added"] = len(ids)
+		}
+
+		// The per-page path, kept for decks with image placeholders: the uploads
+		// need the presentation to attach to, so the pages are not final until it
+		// exists and cannot travel with the create call.
+		if len(slides) > 0 && !wholeDeck {
 			// Step 1.5: Upload any @path placeholders, then rewrite slide XML
 			// with the resulting file_tokens. Uploads run after creation so
 			// they can use the new presentation_id as parent_node.
-			placeholders := extractImagePlaceholderPaths(slides)
 			if len(placeholders) > 0 {
 				tokens, uploaded, err := uploadSlidesPlaceholders(runtime, presentationID, placeholders, param)
 				if err != nil {
@@ -181,13 +274,11 @@ var SlidesCreate = common.Shortcut{
 				slideData, err := runtime.CallAPITyped(
 					"POST",
 					slideURL,
-					map[string]interface{}{"revision_id": -1},
-					map[string]interface{}{
-						"slide": map[string]interface{}{"content": slideXML},
-					},
+					createSlideQuery(),
+					createSlideBody(slideXML, runtime),
 				)
 				if err != nil {
-					return appendSlidesProgressHint(err, fmt.Sprintf("adding slide %d/%d failed; presentation %s was created, %d slide(s) added before failure", i+1, len(slides), presentationID, i))
+					return appendSlidesProgressHint(enrichSlidesLintError(err), fmt.Sprintf("adding slide %d/%d failed; presentation %s was created, %d slide(s) added before failure", i+1, len(slides), presentationID, i))
 				}
 				sid := common.GetString(slideData, "slide_id")
 				if sid != "" {
@@ -352,16 +443,96 @@ func effectiveTitle(title string) string {
 	return title
 }
 
-// buildPresentationXML builds the minimal XML for a new empty presentation.
-func buildPresentationXML(title string) string {
+// createSlideQuery builds the query for the per-page calls +create makes after
+// the presentation exists. revision_id is pinned to -1 (latest) rather than
+// exposed: the deck was created by this same command a moment ago, so there is
+// no earlier revision a caller could sensibly target.
+func createSlideQuery() map[string]interface{} {
+	return map[string]interface{}{"revision_id": -1}
+}
+
+// createSlideBody builds the per-page body shared by dry-run and execute, so
+// the two cannot drift on the lint switch the way two literals would.
+//
+// The presentation-create call has no body of its own to stamp: it sends the
+// title-only <presentation> shell from buildPresentationXML, and there is no
+// page in it for the server to lint.
+func createSlideBody(slideXML string, runtime *common.RuntimeContext) map[string]interface{} {
+	return withLintXML(map[string]interface{}{
+		"slide": map[string]interface{}{"content": slideXML},
+	}, runtime)
+}
+
+// buildPresentationXML builds the XML for a new presentation. With no pages it
+// is the empty shell; with pages it is the whole deck, which is what lets the
+// backend judge every page in one pass.
+func buildPresentationXML(title string, slides ...string) string {
 	escapedTitle := xmlEscape(title)
 	if escapedTitle == "" {
 		escapedTitle = "Untitled"
 	}
 	return fmt.Sprintf(
-		`<presentation xmlns="https://www.larkoffice.com/sml/2.0" width="%d" height="%d"><title>%s</title></presentation>`,
-		defaultPresentationWidth, defaultPresentationHeight, escapedTitle,
+		`<presentation xmlns="https://www.larkoffice.com/sml/2.0" width="%d" height="%d"><title>%s</title>%s</presentation>`,
+		defaultPresentationWidth, defaultPresentationHeight, escapedTitle, strings.Join(slides, ""),
 	)
+}
+
+// createsWholeDeck reports whether +create can submit the finished deck as a
+// single document, which is what makes the lint verdict cover every page and
+// arrive before anything is stored.
+//
+// Image placeholders are the one thing that rules it out. Each upload attaches
+// its file to an existing presentation, so the pages are not final until the
+// deck exists — and a deck that already exists is no longer something a refusal
+// can leave unwritten. Those decks keep the per-page path, where the first bad
+// page stops the run and the pages before it stay.
+func createsWholeDeck(slides, placeholders []string) bool {
+	return len(slides) > 0 && len(placeholders) == 0
+}
+
+// createdSlideIDs reads the page ids the whole-deck create returned, in the
+// order the pages were submitted.
+//
+// A count mismatch is treated as fatal rather than worked around: the ids are
+// about to be used as the write targets for the page bodies, and filling page 2
+// with page 3's content is worse than not filling anything.
+func createdSlideIDs(data map[string]interface{}, want int) ([]string, error) {
+	raw, _ := data["slide_ids"].([]interface{})
+	ids := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && s != "" {
+			ids = append(ids, s)
+		}
+	}
+	if len(ids) != want {
+		return nil, errs.NewInternalError(errs.SubtypeInvalidResponse,
+			"slides create accepted %d page(s) but returned %d page id(s); the deck exists and its pages are empty",
+			want, len(ids))
+	}
+	return ids, nil
+}
+
+// createFillBody builds the call that puts one page's content into the empty
+// page the whole-deck create made for it.
+//
+// Lint is off here on purpose, and it is the only place in the CLI that turns it
+// off without being asked to. The content going in is a byte-for-byte piece of
+// the document the create call just linted as a whole, so re-linting it page by
+// page could only produce a second opinion on content already accepted — and a
+// page rejected at this point would leave the deck half filled, which is the
+// outcome the whole-deck create exists to prevent.
+func createFillBody(slideID, content string) map[string]interface{} {
+	return map[string]interface{}{
+		"parts":        updateSlideParts(slideID, content),
+		lintXMLBodyKey: false,
+	}
+}
+
+// createFillQuery targets the page by id at whatever the latest revision is.
+// The fills run back to back and each one moves the revision on, so pinning a
+// number here would make every page after the first fail.
+func createFillQuery(slideID string) map[string]interface{} {
+	return map[string]interface{}{"slide_id": slideID, "revision_id": -1}
 }
 
 // uploadSlidesPlaceholders uploads each unique placeholder path against the

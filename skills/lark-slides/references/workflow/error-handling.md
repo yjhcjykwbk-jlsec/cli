@@ -53,7 +53,41 @@
 | 1061004 forbidden | 当前用户对演示文稿无编辑权限 | 确认当前用户对目标 PPT 有编辑权限 |
 | 3350001 | XML 非 well-formed、XML 结构不符合服务端要求，或 replace 片段问题 | 优先检查未转义字符；replace 场景再看 `block_id` 和 `<content/>` |
 | 3350002 | `revision_id` 大于当前版本 | 用 `-1` 取当前版本，或重新用 `slides +xml-get` 取最新 `revision_id` |
+| 4000153 `xml lint blocked` | 服务端版式门禁拒绝了这次写入，详见下节 | message 是 JSON，按 `issues[]` 里逐条 finding 修 XML 后重试；确认门禁判错且这页必须原样发布时才加 `--no-lint` |
 | validation: unsafe file path | `--file` 给了绝对路径或上层路径 | `--file` 必须是 CWD 内相对路径；先 `cd` 到素材目录再执行 |
+
+## 服务端版式门禁（4000153）
+
+`+create`、`+add-slide`、`+update-slide`、`+replace-slide` 四条写入路径默认都请求服务端跑版式 lint，不合格就拒绝写入，错误码 `4000153`。
+
+`error.message` 是一份 **JSON 文档**，不是人读散文；四条快捷命令和直接 `lark-cli api` 调接口拿到的是同一个形状，可以直接解析：
+
+| 字段 | 含义 |
+|------|------|
+| `blocked` | 阻断条数，等于 `len(issues)`。**没有非阻断 finding 这回事**：报出来的每一条都得改掉才能写进去 |
+| `issues[]` | 服务端报出的**每一条** finding，不截断、不按级别过滤；顺序是先文档级、再按页号，同页内 error → warning → info |
+| `issues[].level` | 该条的级别（`error` / `warning` / `info`）。它不决定拦不拦——三级都拦——只说明先修哪条更值 |
+| `issues[].code` | 规则名，如 `shape_out_of_canvas`、`blank_slide`、`bbox_overlap` |
+| `issues[].slide_number` | 页号；整份提交时是真实页序，所以一次能报出横跨多页的问题。文档级 finding 不带这个字段（不是 0） |
+| `issues[].message` | 具体到元素的现象，元素位置写在文本里（如 `shape slide[2]/data/shape[1] exceeds the 960x540 canvas`） |
+| `issues[].hint` | 怎么改 |
+| `summary` | 服务端对整份内容的判定：各级别计数、`status`、`release_ready`、`screenshot_review_required` 等 |
+| `schema_issues` | schema 清洗报告（可选） |
+
+**finding 里除上面这几个字段外还有什么，取决于 `code`**——服务端把每条规则自己的判据原样带回来了，不同规则带的是不同的数：`bbox_overlap` 带 `measurement.intersection_area` 和重叠区的宽高，`text_overflows_container` 带 `overflow` 每条边溢出多少 px，覆盖率类规则带 `measurement` 的比例和 `rule.threshold`。定位类的 finding 常带 `related_objects[]`，里面是 `element_id` / `xml_path` / `bbox`——`hint` 说「Locate via related_objects[].xml_path」时指的就是它，且**这类 finding 往往没有 `path`**，位置只能从 `related_objects` 取。解析时把这些都当可选字段读，不要假设固定形状。
+
+`error.hint` 是 CLI 加的摘要——阻断条数、落在哪几页，以及 `--no-lint` 这个服务端不知道的参数。它不复述 finding，**具体怎么改只看 `message`**。
+
+`issues[]` 是一份待办，不是一份分级报告：`info` 那条跟 `error` 那条一样拦着这次写入，挑着修不会让重试通过。
+
+被拒时写入没有发生，不需要回读收拾：
+
+- `+create` 带页面时是整份提交，任何一页不过就整体拒绝，**演示文稿本身也不会被创建**。
+- `+add-slide` / `+update-slide` / `+replace-slide` 拒绝的单位是被写的那一页，页面维持原状。
+
+注意 `+replace-slide` 的判定主体是**拼装后的整页**，不是提交的片段：片段本身合法、但把邻居挤出画布，同样会被拒；反过来，页面上已有的越界元素也会在这次提交里被报出来。
+
+`--no-lint` 是逃生口，只在门禁判错、而这页必须原样发布时用。它只关这一次调用的检查，不改变服务端配置。
 
 ## Command-Specific References
 

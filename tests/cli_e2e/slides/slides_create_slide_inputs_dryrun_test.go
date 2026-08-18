@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,8 +70,17 @@ func TestSlidesCreateRepeatedSlideFileDryRunE2E(t *testing.T) {
 
 	require.Equal(t, "POST", gjson.Get(result.Stdout, "data.api.0.method").String(), result.Stdout)
 	require.Equal(t, "/open-apis/slides_ai/v1/xml_presentations", gjson.Get(result.Stdout, "data.api.0.url").String(), result.Stdout)
-	require.Equal(t, page1, gjson.Get(result.Stdout, "data.api.1.body.slide.content").String(), result.Stdout)
-	require.Equal(t, page2, gjson.Get(result.Stdout, "data.api.2.body.slide.content").String(), result.Stdout)
+
+	// Both pages ride along with the create call: that is the document the
+	// backend lints, so the bytes have to be intact there and not just in the
+	// per-page write that follows.
+	created := gjson.Get(result.Stdout, "data.api.0.body.xml_presentation.content").String()
+	require.Contains(t, created, page1, result.Stdout)
+	require.Contains(t, created, page2, result.Stdout)
+	require.Less(t, strings.Index(created, page1), strings.Index(created, page2), result.Stdout)
+
+	require.Equal(t, page1, gjson.Get(result.Stdout, "data.api.1.body.parts.0.replacement").String(), result.Stdout)
+	require.Equal(t, page2, gjson.Get(result.Stdout, "data.api.2.body.parts.0.replacement").String(), result.Stdout)
 	require.False(t, gjson.Get(result.Stdout, "data.api.3").Exists(), result.Stdout)
 }
 
@@ -105,7 +115,8 @@ func TestSlidesCreateSlidesFileAndStdinDryRunE2E(t *testing.T) {
 			})
 			require.NoError(t, err)
 			result.AssertExitCode(t, 0)
-			require.Equal(t, page2, gjson.Get(result.Stdout, "data.api.1.body.slide.content").String(), result.Stdout)
+			require.Contains(t, gjson.Get(result.Stdout, "data.api.0.body.xml_presentation.content").String(), page2, result.Stdout)
+			require.Equal(t, page2, gjson.Get(result.Stdout, "data.api.1.body.parts.0.replacement").String(), result.Stdout)
 		})
 	}
 }

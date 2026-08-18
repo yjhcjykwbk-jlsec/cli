@@ -45,6 +45,7 @@ lark-cli slides +add-slide --presentation "$PRES_ID" --slide @page3.xml --dry-ru
 | `--slide` | 是 | 一个完整的 `<slide>...</slide>` 文档；支持字面量、`@file`、stdin `-` |
 | `--before-slide-id` | 否 | 插到该 `slide_id` 之前；**不传就是追加到末尾** |
 | `--revision-id` | 否 | 演示文稿版本号，默认 `-1`（最新）；传具体版本号做乐观锁 |
+| `--no-lint` | 否 | 跳过服务端版式校验。默认每次提交都校验，不合格返回 `4000153` 且这一页不写入；见 [error-handling.md](../workflow/error-handling.md#服务端版式门禁4000153) |
 | `--dry-run` | 否 | 打印将要发起的请求（含图片上传步骤），不写入 |
 
 `@file` 路径**必须在 CWD 内**（如 `@./plan/page3.xml`）；绝对路径和 `../` 会被拒绝并报 `unsafe file path`。
@@ -89,4 +90,5 @@ lark-cli slides +add-slide --as user \
 | `--slide is not a single complete <slide> document` | 传了 `<presentation>` 整份 XML，或多个 `<slide>` 拼在一起 | 一次只传一页，根元素必须是 `<slide>` |
 | `--slide cannot be empty` | `@file` 指向空文件，或 stdin 没内容 | 检查文件内容 |
 | 3350001 | XML 结构/转义有问题；**或 `--before-slide-id` 不是有效 `slide_id`** | 优先改用 `--slide @file` 绕开 shell 转义；插页失败先 `+xml-get` 回读确认 `slide_id`；再按 [workflow/error-handling.md](../workflow/error-handling.md) 排查 |
+| 4000153 `xml lint blocked` | 服务端版式门禁拒绝了这一页（越界、空白页等） | message 是 JSON，按 `issues[]` 逐条修这一页后重试；页面没有被加进去，不需要回读收拾；确认判错才用 `--no-lint` |
 | 1061004 / 403 | 当前身份对这份 PPT 没有编辑权限 | 检查是否拥有 `slides:presentation:update` 或 `slides:presentation:write_only` scope；wiki 链接另需 `wiki:node:read`，`@` 占位符另需 `docs:document.media:upload`；`--as bot` 还要求该 bot 对目标 PPT 有编辑权限 |

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,42 +300,7 @@ func TestSlidesCreateWithSlides(t *testing.T) {
 	t.Parallel()
 
 	f, stdout, _, reg := cmdutil.TestFactory(t, slidesTestConfig(t, ""))
-	reg.Register(&httpmock.Stub{
-		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations",
-		Body: map[string]interface{}{
-			"code": 0,
-			"msg":  "ok",
-			"data": map[string]interface{}{
-				"xml_presentation_id": "pres_with_slides",
-				"revision_id":         1,
-			},
-		},
-	})
-	reg.Register(&httpmock.Stub{
-		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_with_slides/slide",
-		Body: map[string]interface{}{
-			"code": 0,
-			"msg":  "ok",
-			"data": map[string]interface{}{
-				"slide_id":    "slide_001",
-				"revision_id": 2,
-			},
-		},
-	})
-	reg.Register(&httpmock.Stub{
-		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_with_slides/slide",
-		Body: map[string]interface{}{
-			"code": 0,
-			"msg":  "ok",
-			"data": map[string]interface{}{
-				"slide_id":    "slide_002",
-				"revision_id": 3,
-			},
-		},
-	})
+	createStubPresentation(t, reg, "pres_with_slides", 2)
 
 	slidesJSON := `["<slide xmlns=\"https://www.larkoffice.com/sml/2.0\"><data></data></slide>","<slide xmlns=\"https://www.larkoffice.com/sml/2.0\"><data></data></slide>"]`
 	err := runSlidesCreateShortcut(t, f, stdout, []string{
@@ -354,14 +321,19 @@ func TestSlidesCreateWithSlides(t *testing.T) {
 	if !ok || len(slideIDs) != 2 {
 		t.Fatalf("slide_ids = %v, want 2 elements", data["slide_ids"])
 	}
-	if slideIDs[0] != "slide_001" || slideIDs[1] != "slide_002" {
-		t.Fatalf("slide_ids = %v, want [slide_001, slide_002]", slideIDs)
+	if slideIDs[0] != "s_1" || slideIDs[1] != "s_2" {
+		t.Fatalf("slide_ids = %v, want [s_1, s_2]", slideIDs)
 	}
 	if data["slides_added"] != float64(2) {
 		t.Fatalf("slides_added = %v, want 2", data["slides_added"])
 	}
 }
 
+// TestSlidesCreatePreservesSchemaIssues keeps the advisories from the call that
+// judges the deck. They are reported once, against the whole document, because
+// that is the shape of the call that produced them: the pages travel with the
+// create, so there is no per-page verdict to collect afterwards and no
+// slide_issues list to build from one.
 func TestSlidesCreatePreservesSchemaIssues(t *testing.T) {
 	t.Parallel()
 
@@ -373,19 +345,17 @@ func TestSlidesCreatePreservesSchemaIssues(t *testing.T) {
 			"code": 0,
 			"data": map[string]interface{}{
 				"xml_presentation_id": "pres_issues",
+				"slide_ids":           []interface{}{"s_1"},
 				"issues":              "presentation schema issue",
 			},
 		},
 	})
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_issues/slide",
+		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_issues/slide/replace",
 		Body: map[string]interface{}{
 			"code": 0,
-			"data": map[string]interface{}{
-				"slide_id": "slide_001",
-				"issues":   "slide schema issue",
-			},
+			"data": map[string]interface{}{"revision_id": 2},
 		},
 	})
 
@@ -402,18 +372,92 @@ func TestSlidesCreatePreservesSchemaIssues(t *testing.T) {
 	if data["issues"] != "presentation schema issue" {
 		t.Fatalf("issues = %v, want presentation schema issue", data["issues"])
 	}
-	slideIssues, ok := data["slide_issues"].([]interface{})
-	if !ok || len(slideIssues) != 1 {
-		t.Fatalf("slide_issues = %#v, want one entry", data["slide_issues"])
-	}
-	issue, _ := slideIssues[0].(map[string]interface{})
-	if issue["slide_index"] != float64(1) || issue["slide_id"] != "slide_001" || issue["issues"] != "slide schema issue" {
-		t.Fatalf("slide_issues[0] = %#v", issue)
+	if _, ok := data["slide_issues"]; ok {
+		t.Fatalf("slide_issues = %#v, want it absent: the deck is judged once, as a document", data["slide_issues"])
 	}
 }
 
-// TestSlidesCreateWithSlidesPartialFailure verifies error reporting when a slide fails to create.
-func TestSlidesCreateWithSlidesPartialFailure(t *testing.T) {
+// TestSlidesCreateBadPageLeavesNothingBehind is what "one bad page fails the
+// whole deck" has to mean. The pages travel with the create call, so a rejection
+// happens before anything is stored: there is no presentation to resume from, no
+// count of pages that landed, and so nothing for a progress hint to say. A hint
+// here would be worse than none — it would name a presentation the caller cannot
+// find.
+func TestSlidesCreateBadPageLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+
+	f, stdout, _, reg := cmdutil.TestFactory(t, slidesTestConfig(t, ""))
+	var createBody map[string]interface{}
+	reg.Register(&httpmock.Stub{
+		Method: "POST",
+		URL:    "/open-apis/slides_ai/v1/xml_presentations",
+		Body:   map[string]interface{}{"code": 4000153, "msg": lintBlockMessage},
+		OnMatch: func(req *http.Request) {
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Errorf("read create body: %v", err)
+				return
+			}
+			if err := json.Unmarshal(raw, &createBody); err != nil {
+				t.Errorf("decode create body %q: %v", raw, err)
+			}
+		},
+	})
+
+	page1 := `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data><shape type="text" width="10" height="10"/></data></slide>`
+	page2 := `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data><shape type="text" width="9999" height="10"/></data></slide>`
+	err := runSlidesCreateShortcut(t, f, stdout, []string{
+		"+create",
+		"--title", "Partial",
+		"--slide", page1,
+		"--slide", page2,
+		"--as", "user",
+	})
+	if err == nil {
+		t.Fatal("expected the deck to be refused, got nil")
+	}
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("expected a typed errs.* error, got %v", err)
+	}
+	if p.Category != errs.CategoryAPI {
+		t.Fatalf("category = %q, want %q", p.Category, errs.CategoryAPI)
+	}
+	// The lint report reaches the caller verbatim, so the per-page findings are
+	// there to read and parse the same way `lark-cli api` would deliver them.
+	if p.Message != lintBlockMessage {
+		t.Fatalf("message = %q, want the lint report verbatim", p.Message)
+	}
+	// Nothing landed, and the hint says so outright: the lint wording alone is
+	// written for the paths where the deck already exists.
+	if !strings.Contains(p.Hint, "no presentation was created") {
+		t.Fatalf("hint = %q, want it to say nothing was created", p.Hint)
+	}
+	for _, unwanted := range []string{"before failure", "slide(s) added", "page(s) are still empty"} {
+		if strings.Contains(p.Hint, unwanted) {
+			t.Fatalf("hint = %q, want no progress claim: the refusal came before any write", p.Hint)
+		}
+	}
+
+	// Both pages were in the document the backend judged. Sending them one at a
+	// time is what let a later page be rejected after earlier ones were stored.
+	content, _ := createBody["xml_presentation"].(map[string]interface{})
+	xml, _ := content["content"].(string)
+	for i, page := range []string{page1, page2} {
+		if !strings.Contains(xml, page) {
+			t.Fatalf("create content is missing page %d\ngot: %s", i+1, xml)
+		}
+	}
+	if body, ok := createBody[lintXMLBodyKey]; !ok || body != true {
+		t.Fatalf("create body %s = %v, want true: the whole-deck call is the one that lints", lintXMLBodyKey, body)
+	}
+}
+
+// TestSlidesCreateReportsAnUnfilledPage covers the failure that can still leave
+// the deck incomplete. The pages passed the lint and the deck exists, so the
+// hint has to say which page did not make it and how many are still empty —
+// resuming needs both.
+func TestSlidesCreateReportsAnUnfilledPage(t *testing.T) {
 	t.Parallel()
 
 	f, stdout, _, reg := cmdutil.TestFactory(t, slidesTestConfig(t, ""))
@@ -422,49 +466,34 @@ func TestSlidesCreateWithSlidesPartialFailure(t *testing.T) {
 		URL:    "/open-apis/slides_ai/v1/xml_presentations",
 		Body: map[string]interface{}{
 			"code": 0,
-			"msg":  "ok",
 			"data": map[string]interface{}{
 				"xml_presentation_id": "pres_partial",
 				"revision_id":         1,
+				"slide_ids":           []interface{}{"s_1", "s_2"},
 			},
 		},
 	})
-	// First slide succeeds
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_partial/slide",
-		Body: map[string]interface{}{
-			"code": 0,
-			"msg":  "ok",
-			"data": map[string]interface{}{
-				"slide_id":    "slide_ok",
-				"revision_id": 2,
-			},
-		},
+		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_partial/slide/replace",
+		Body:   map[string]interface{}{"code": 0, "data": map[string]interface{}{"revision_id": 2}},
 	})
-	// Second slide fails
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
-		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_partial/slide",
-		Body: map[string]interface{}{
-			"code": 400,
-			"msg":  "invalid xml",
-		},
+		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_partial/slide/replace",
+		Body:   map[string]interface{}{"code": 400, "msg": "invalid xml"},
 	})
 
-	// Page 2 is a structurally valid <slide>, so it reaches the API and is
-	// rejected there — the case this test is about. A locally malformed page is
-	// now caught before the presentation is created at all, which is a different
-	// path with its own test.
-	slidesJSON := `["<slide xmlns=\"https://www.larkoffice.com/sml/2.0\"><data></data></slide>","<slide xmlns=\"https://www.larkoffice.com/sml/2.0\"><data><shape type=\"text\" height=\"-6\"/></data></slide>"]`
+	page := `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data/></slide>`
 	err := runSlidesCreateShortcut(t, f, stdout, []string{
 		"+create",
 		"--title", "Partial",
-		"--slides", slidesJSON,
+		"--slide", page,
+		"--slide", page,
 		"--as", "user",
 	})
 	if err == nil {
-		t.Fatal("expected error for partial failure, got nil")
+		t.Fatal("expected the failed fill to surface, got nil")
 	}
 	p, ok := errs.ProblemOf(err)
 	if !ok {
@@ -478,17 +507,10 @@ func TestSlidesCreateWithSlidesPartialFailure(t *testing.T) {
 	if p.Code != 400 || p.Message != "invalid xml" {
 		t.Fatalf("api failure not preserved: code=%d message=%q", p.Code, p.Message)
 	}
-	// The presentation was created but a slide add failed; the recovery hint
-	// carries the partial-progress context (which presentation exists, how many
-	// slides landed) so the caller can resume without recreating.
-	if !strings.Contains(p.Hint, "pres_partial") {
-		t.Fatalf("hint should contain presentation ID, got: %s", p.Hint)
-	}
-	if !strings.Contains(p.Hint, "slide 2/2") {
-		t.Fatalf("hint should indicate slide 2/2 failed, got: %s", p.Hint)
-	}
-	if !strings.Contains(p.Hint, "1 slide(s) added") {
-		t.Fatalf("hint should report 1 slide added before failure, got: %s", p.Hint)
+	for _, want := range []string{"pres_partial", "page 2/2", "1 page(s) are still empty"} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint lost %q, got: %s", want, p.Hint)
+		}
 	}
 }
 
@@ -788,22 +810,32 @@ func TestXmlEscape(t *testing.T) {
 // registry-backed slide stubs for a deck of n pages, in call order.
 func createStubPresentation(t *testing.T, reg *httpmock.Registry, presentationID string, n int) []*httpmock.Stub {
 	t.Helper()
+	ids := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		ids = append(ids, createStubSlideID(i))
+	}
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
 		URL:    "/open-apis/slides_ai/v1/xml_presentations",
 		Body: map[string]interface{}{
 			"code": 0,
-			"data": map[string]interface{}{"xml_presentation_id": presentationID, "revision_id": 1},
+			"data": map[string]interface{}{
+				"xml_presentation_id": presentationID,
+				"revision_id":         1,
+				// The pages come back from the create call now, because they were
+				// submitted with it. Their bodies are filled by the calls below.
+				"slide_ids": ids,
+			},
 		},
 	})
 	stubs := make([]*httpmock.Stub, 0, n)
 	for i := 0; i < n; i++ {
 		stub := &httpmock.Stub{
 			Method: "POST",
-			URL:    "/open-apis/slides_ai/v1/xml_presentations/" + presentationID + "/slide",
+			URL:    "/open-apis/slides_ai/v1/xml_presentations/" + presentationID + "/slide/replace",
 			Body: map[string]interface{}{
 				"code": 0,
-				"data": map[string]interface{}{"slide_id": fmt.Sprintf("s_%d", i+1), "revision_id": i + 2},
+				"data": map[string]interface{}{"revision_id": i + 2},
 			},
 		}
 		reg.Register(stub)
@@ -812,16 +844,35 @@ func createStubPresentation(t *testing.T, reg *httpmock.Registry, presentationID
 	return stubs
 }
 
-// capturedSlideContent pulls slide.content out of a captured request body.
+// createStubSlideID is the page id the stubbed create hands back for page i.
+func createStubSlideID(i int) string { return fmt.Sprintf("s_%d", i+1) }
+
+// capturedSlideContent pulls the page XML out of a captured fill request.
 func capturedSlideContent(t *testing.T, stub *httpmock.Stub) string {
 	t.Helper()
 	var body map[string]interface{}
 	if err := json.Unmarshal(stub.CapturedBody, &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	slide, _ := body["slide"].(map[string]interface{})
-	content, _ := slide["content"].(string)
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) != 1 {
+		t.Fatalf("parts = %v, want exactly one whole-page part", body["parts"])
+	}
+	part, _ := parts[0].(map[string]interface{})
+	content, _ := part["replacement"].(string)
 	return content
+}
+
+// wantFilledPage is what a page looks like on the wire: the caller's own bytes
+// with the id of the page it is being written into stamped on the root, which is
+// what makes the replace target that page rather than append a new one.
+func wantFilledPage(t *testing.T, page string, i int) string {
+	t.Helper()
+	stamped, err := ensureXMLRootID(page, createStubSlideID(i))
+	if err != nil {
+		t.Fatalf("stamp page %d: %v", i+1, err)
+	}
+	return stamped
 }
 
 // TestSlidesCreateAssemblesRepeatedSlideFiles is the reason --slide exists:
@@ -854,12 +905,13 @@ func TestSlidesCreateAssemblesRepeatedSlideFiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Flag order is page order, and the file bytes arrive verbatim.
-	if got := capturedSlideContent(t, stubs[0]); got != page1 {
-		t.Fatalf("page 1 content = %q, want the file verbatim %q", got, page1)
+	// Flag order is page order, and the file bytes arrive verbatim apart from
+	// the page id the fill has to stamp on the root.
+	if got, want := capturedSlideContent(t, stubs[0]), wantFilledPage(t, page1, 0); got != want {
+		t.Fatalf("page 1 content = %q, want the file verbatim %q", got, want)
 	}
-	if got := capturedSlideContent(t, stubs[1]); got != page2 {
-		t.Fatalf("page 2 content = %q, want %q", got, page2)
+	if got, want := capturedSlideContent(t, stubs[1]), wantFilledPage(t, page2, 1); got != want {
+		t.Fatalf("page 2 content = %q, want %q", got, want)
 	}
 
 	data := decodeSlidesCreateEnvelope(t, stdout)
@@ -889,7 +941,7 @@ func TestSlidesCreateReadsSlidesArrayFromFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data/></slide>`
+	want := wantFilledPage(t, `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data/></slide>`, 0)
 	if got := capturedSlideContent(t, stubs[0]); got != want {
 		t.Fatalf("slide content = %q, want %q", got, want)
 	}
@@ -920,8 +972,8 @@ func TestSlidesCreateStripsBOMFromSlideFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The BOM is dropped rather than forwarded: the backend would reject it too.
-	if got := capturedSlideContent(t, stubs[0]); got != page {
-		t.Fatalf("slide content = %q, want the page without the BOM %q", got, page)
+	if got, want := capturedSlideContent(t, stubs[0]), wantFilledPage(t, page, 0); got != want {
+		t.Fatalf("slide content = %q, want the page without the BOM %q", got, want)
 	}
 }
 
@@ -1221,6 +1273,86 @@ func decodeSlidesCreateEnvelope(t *testing.T, stdout *bytes.Buffer) map[string]i
 		t.Fatalf("missing data in output envelope: %#v", envelope)
 	}
 	return data
+}
+
+// TestSlidesCreateWithImagesKeepsThePerPageWrites pins the one deck shape that
+// cannot be judged as a document, and why.
+//
+// Each upload attaches its file to an existing presentation, so the pages hold
+// @path placeholders until the deck exists — and once it exists, a refusal can
+// no longer leave nothing behind. So these decks keep the older shape: the
+// presentation is created empty, and the pages go in one at a time, each linted
+// on its own. Losing that fallback silently would mean uploading images into a
+// presentation and then discovering the pages referencing them cannot be sent.
+//
+// Not parallel: uses os.Chdir to pin local file paths to a temp dir.
+func TestSlidesCreateWithImagesKeepsThePerPageWrites(t *testing.T) {
+	dir := t.TempDir()
+	withSlidesTestWorkingDir(t, dir)
+	if err := os.WriteFile("a.png", []byte("aa"), 0o644); err != nil {
+		t.Fatalf("write a.png: %v", err)
+	}
+
+	f, stdout, _, reg := cmdutil.TestFactory(t, slidesTestConfig(t, ""))
+	var createBody map[string]interface{}
+	reg.Register(&httpmock.Stub{
+		Method: "POST",
+		URL:    "/open-apis/slides_ai/v1/xml_presentations",
+		Body: map[string]interface{}{
+			"code": 0,
+			"data": map[string]interface{}{"xml_presentation_id": "pres_img_fallback", "revision_id": 1},
+		},
+		OnMatch: func(req *http.Request) {
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Errorf("read create body: %v", err)
+				return
+			}
+			if err := json.Unmarshal(raw, &createBody); err != nil {
+				t.Errorf("decode create body %q: %v", raw, err)
+			}
+		},
+	})
+	reg.Register(&httpmock.Stub{
+		Method: "POST",
+		URL:    "/open-apis/drive/v1/medias/upload_all",
+		Body:   map[string]interface{}{"code": 0, "data": map[string]interface{}{"file_token": "tok_a"}},
+	})
+	slideStub := &httpmock.Stub{
+		Method: "POST",
+		URL:    "/open-apis/slides_ai/v1/xml_presentations/pres_img_fallback/slide",
+		Body:   map[string]interface{}{"code": 0, "data": map[string]interface{}{"slide_id": "s_1", "revision_id": 2}},
+	}
+	reg.Register(slideStub)
+
+	if err := runSlidesCreateShortcut(t, f, stdout, []string{
+		"+create",
+		"--title", "Images",
+		"--slide", `<slide xmlns="https://www.larkoffice.com/sml/2.0"><data><img src="@a.png" width="100" height="100"/></data></slide>`,
+		"--as", "user",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The create call is the empty shell: no page travelled with it, so there was
+	// nothing for it to lint and it does not claim otherwise.
+	presentation, _ := createBody["xml_presentation"].(map[string]interface{})
+	content, _ := presentation["content"].(string)
+	if strings.Contains(content, "<slide") {
+		t.Fatalf("create content = %q, want the empty shell: the pages are not final until the uploads run", content)
+	}
+	if v, ok := createBody[lintXMLBodyKey]; ok {
+		t.Fatalf("create body carried %s = %v, want it absent on a shell with no page in it", lintXMLBodyKey, v)
+	}
+
+	// The page went in through the per-page writer, which does lint it.
+	var slideBody map[string]interface{}
+	if err := json.Unmarshal(slideStub.CapturedBody, &slideBody); err != nil {
+		t.Fatalf("decode slide body: %v", err)
+	}
+	if v, ok := slideBody[lintXMLBodyKey]; !ok || v != true {
+		t.Fatalf("slide body[%s] = %v, want true", lintXMLBodyKey, v)
+	}
 }
 
 // TestSlidesCreateWithImagePlaceholders verifies @path placeholders are uploaded

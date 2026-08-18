@@ -51,6 +51,7 @@ lark-cli slides +replace-slide --as user \
 | `--parts` | 是 | JSON 数组（`[{...}, ...]`），单次最多 200 条。支持 `@<file>` 和 `-`（stdin）读取 |
 | `--revision-id` | 否 | 基础版本号；默认 `-1` 表示基于最新版执行；传具体版本号时，服务端以该版本为 base 执行；**传不存在的版本号（超过当前 revision）返回 3350002** |
 | `--tid` | 否 | 并发事务 ID；多人协作长事务才用，单次单人调用留空 |
+| `--no-lint` | 否 | 跳过服务端版式校验。默认每次提交都校验，**判定主体是这些 parts 拼装后的整页**，不合格返回 `4000153` 且页面维持原状；见 [error-handling.md](../workflow/error-handling.md#服务端版式门禁4000153) |
 
 ## parts 元素结构
 
@@ -249,6 +250,7 @@ lark-cli slides +replace-slide --as user \
 | `--parts[i] (block_replace) requires non-empty block_id` / `replacement` | 字段名对，但值缺失或是空串 | 按 parts 元素结构补齐值 |
 | `<img>` 不显示 / 显示破图 | `src` 写了外链 URL | 换成通过 [`+media-upload`](lark-slides-media-upload.md) 拿到的 `file_token` |
 | 3350001 | `replacement` 不是合法单根 XML 片段，或 `block_id` 不存在 | CLI 已自动注入 `id` 和 `<content/>`；如果仍报错，重新 `slide.get` 拿最新 XML 确认 `block_id` 存在；检查 XML 结构是否合法；坐标是否超出 960×540 |
+| 4000153 `xml lint blocked` | 服务端版式门禁拒绝了这次提交，页面维持原状。判定主体是拼装后的整页，所以片段自身合法也可能被拒：可能是它把邻居挤出画布，也可能报的是页面上早就存在的越界元素 | message 是 JSON，按 `issues[]` 逐条修；要动的是既有元素时，在同一批 `--parts` 里一起改；确认判错才用 `--no-lint` |
 | 403 | 权限不足 | 需要 `slides:presentation:update` 或 `slides:presentation:write_only`；wiki URL 还需要 `wiki:node:read` |
 
 ## 相关命令

@@ -3738,13 +3738,6 @@
         ]
       },
       {
-        "name": "series-data-labels",
-        "kind": "own",
-        "type": "string",
-        "required": "optional",
-        "desc": "Configure labels independently by 1-based value-series position; each item has series_position, scope (none/all/last), and optional content/position; mutually exclusive with global label flags"
-      },
-      {
         "name": "stack",
         "kind": "own",
         "type": "string",
@@ -4008,11 +4001,11 @@
         ]
       },
       {
-        "name": "series-data-labels",
+        "name": "last-point-label",
         "kind": "own",
-        "type": "string",
+        "type": "bool",
         "required": "optional",
-        "desc": "Configure labels independently by 1-based value-series position; each item has series_position, scope (none/all/last), and optional content/position; mutually exclusive with global label flags"
+        "desc": "For line, area, radar, and linear combo series only; true shows a value label on the last data point of every series, while false removes those point labels"
       },
       {
         "name": "stack",

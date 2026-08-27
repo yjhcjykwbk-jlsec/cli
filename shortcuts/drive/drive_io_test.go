@@ -113,13 +113,23 @@ func withDriveWorkingDir(t *testing.T, dir string) {
 	})
 }
 
+func assertDriveTTYSpinner(t *testing.T, stderr *bytes.Buffer, label string) {
+	t.Helper()
+	got := stderr.String()
+	labelAt := strings.Index(got, label+"...")
+	if labelAt < 0 || !strings.Contains(got[labelAt:], "\r\x1b[K\x1b[?25h") {
+		t.Fatalf("stderr = %q, want TTY spinner %q cleared after rendering", got, label)
+	}
+}
+
 // TestDriveUploadLargeFileUsesMultipart verifies large uploads use the multipart workflow.
 func TestDriveUploadLargeFileUsesMultipart(t *testing.T) {
 	// Use a distinct AppID to avoid Lark SDK global token cache collision with other tests.
 	uploadTestConfig := &core.CliConfig{
 		AppID: "drive-upload-test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
 	}
-	f, stdout, _, reg := cmdutil.TestFactory(t, uploadTestConfig)
+	f, stdout, stderr, reg := cmdutil.TestFactory(t, uploadTestConfig)
+	f.IOStreams.StderrIsTerminal = true
 
 	// Step 1: upload_prepare
 	reg.Register(&httpmock.Stub{
@@ -191,6 +201,7 @@ func TestDriveUploadLargeFileUsesMultipart(t *testing.T) {
 	if !strings.Contains(stdout.String(), "file_multipart_token") {
 		t.Fatalf("stdout missing file_token: %s", stdout.String())
 	}
+	assertDriveTTYSpinner(t, stderr, "Uploading multipart file")
 }
 
 // TestDriveUploadLargeFileToWikiUsesMultipart verifies large Wiki uploads use multipart requests.

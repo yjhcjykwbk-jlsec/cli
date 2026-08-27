@@ -2383,7 +2383,8 @@ func TestDrivePushUploadsLargeFileViaMultipart(t *testing.T) {
 	pushTestConfig := &core.CliConfig{
 		AppID: "drive-push-multipart-test", AppSecret: "test-secret", Brand: core.BrandFeishu,
 	}
-	f, stdout, _, reg := cmdutil.TestFactory(t, pushTestConfig)
+	f, stdout, stderr, reg := cmdutil.TestFactory(t, pushTestConfig)
+	f.IOStreams.StderrIsTerminal = true
 
 	// Wrap the default FileIO provider to count Open calls. The
 	// shared-fd refactor opens the local file exactly once and feeds
@@ -2491,6 +2492,7 @@ func TestDrivePushUploadsLargeFileViaMultipart(t *testing.T) {
 	if got := opens.Load(); got != 1 {
 		t.Fatalf("FileIO.Open invocations = %d, want exactly 1 (single shared fd across all blocks)", got)
 	}
+	assertDriveTTYSpinner(t, stderr, "Uploading multipart file")
 }
 
 // TestDrivePushHelpersRelPath pins the path utilities since the upload

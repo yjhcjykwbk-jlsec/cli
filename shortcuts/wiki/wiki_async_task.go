@@ -128,13 +128,16 @@ func parseWikiAsyncTaskStatus(taskID string, task map[string]interface{}, result
 // existing test hooks.
 func pollWikiAsyncTask(
 	ctx context.Context,
-	_ *common.RuntimeContext,
+	runtime *common.RuntimeContext,
 	taskID, label string,
 	attempts int,
 	interval time.Duration,
 	fetcher wikiAsyncTaskFetcher,
 	nextCommand string,
 ) (wikiAsyncTaskStatus, bool, error) {
+	stopSpinner := runtime.StartSpinner(fmt.Sprintf("Waiting for wiki %s task", label))
+	defer stopSpinner()
+
 	lastStatus := wikiAsyncTaskStatus{TaskID: taskID}
 	var lastErr error
 	hadSuccessfulPoll := false

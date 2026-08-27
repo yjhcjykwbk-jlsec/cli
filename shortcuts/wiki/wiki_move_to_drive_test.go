@@ -226,6 +226,7 @@ func TestParseWikiMoveToDriveTaskStatus(t *testing.T) {
 func TestRunWikiMoveToDriveSuccess(t *testing.T) {
 	withSingleWikiMoveToDrivePoll(t)
 	runtime, stderr := newWikiMoveToDriveRuntime(t, core.AsUser)
+	runtime.IO().StderrIsTerminal = true
 	client := &fakeWikiMoveToDriveClient{
 		moveTaskID: "raw-task-signature",
 		taskStatus: []wikiMoveToDriveTaskStatus{{
@@ -253,9 +254,7 @@ func TestRunWikiMoveToDriveSuccess(t *testing.T) {
 	if len(client.moveSpecs) != 1 || client.moveSpecs[0].FolderToken != "fldABC" {
 		t.Fatalf("move specs = %#v", client.moveSpecs)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want no progress output", stderr.String())
-	}
+	assertWikiTTYSpinner(t, stderr.String(), "Waiting for wiki move-to-drive task")
 }
 
 func TestRunWikiMoveToDriveTimeoutReturnsResumeCommand(t *testing.T) {

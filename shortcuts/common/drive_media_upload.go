@@ -60,10 +60,6 @@ type DriveMediaMultipartUploadConfig struct {
 	Extra      string
 	// Reader mirrors DriveMediaUploadAllConfig.Reader for chunked uploads.
 	Reader io.Reader
-	// Quiet suppresses the progress narration on ErrOut that the multipart
-	// path writes unconditionally. Callers whose success contract forbids
-	// non-empty stderr (e.g. sheets shortcuts) set this to true.
-	Quiet bool
 }
 
 // UploadDriveMediaAllTyped uploads a file in a single request: file-open
@@ -157,6 +153,9 @@ func UploadDriveMediaMultipartTyped(runtime *RuntimeContext, cfg DriveMediaMulti
 	if err != nil {
 		return "", fileevent.ReportUploadError(runtime, err, meta)
 	}
+	stopSpinner := runtime.StartSpinner("Uploading multipart media")
+	defer stopSpinner()
+
 	meta.APIPath = driveMediaUploadPartPath
 	if err = uploadDriveMediaMultipartPartsTyped(runtime, cfg, session); err != nil {
 		return "", fileevent.ReportUploadError(runtime, err, meta)

@@ -920,6 +920,8 @@ func drivePushUploadMultipart(_ context.Context, runtime *common.RuntimeContext,
 			"upload_prepare returned invalid data: upload_id=%q, block_size=%d, block_num=%d",
 			uploadID, blockSize, blockNum)
 	}
+	stopSpinner := runtime.StartSpinner("Uploading multipart file")
+	defer stopSpinner()
 
 	// Open the local file ONCE for the whole multipart loop. fileio.File
 	// implements io.ReaderAt, so each block is a fresh

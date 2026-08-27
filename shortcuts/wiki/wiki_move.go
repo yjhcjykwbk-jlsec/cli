@@ -571,6 +571,9 @@ func wikiMoveTaskResultCommand(taskID string, identity core.Identity) string {
 }
 
 func pollWikiMoveTask(ctx context.Context, client wikiMoveClient, runtime *common.RuntimeContext, taskID string) (wikiMoveTaskStatus, bool, error) {
+	stopSpinner := runtime.StartSpinner("Waiting for wiki move task")
+	defer stopSpinner()
+
 	lastStatus := wikiMoveTaskStatus{TaskID: taskID}
 	var lastErr error
 	hadSuccessfulPoll := false

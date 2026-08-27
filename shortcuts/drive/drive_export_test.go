@@ -1205,7 +1205,8 @@ func TestDriveExportReadyDownloadFailureIncludesRecoveryHint(t *testing.T) {
 }
 
 func TestDriveExportTimeoutReturnsFollowUpCommand(t *testing.T) {
-	f, stdout, _, reg := cmdutil.TestFactory(t, driveTestConfig())
+	f, stdout, stderr, reg := cmdutil.TestFactory(t, driveTestConfig())
+	f.IOStreams.StderrIsTerminal = true
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
 		URL:    "/open-apis/drive/v1/export_tasks",
@@ -1267,6 +1268,7 @@ func TestDriveExportTimeoutReturnsFollowUpCommand(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmpDir, "report.pdf")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected downloaded file, err=%v", err)
 	}
+	assertDriveTTYSpinner(t, stderr, "Exporting")
 }
 
 func TestDriveExportTimeoutPreservesProvidedFileName(t *testing.T) {

@@ -18,10 +18,18 @@ import (
 // so it gets a dedicated test surface here rather than relying only on the
 // transitive coverage from the delete-space / delete-node paths.
 
+func assertWikiTTYSpinner(t *testing.T, stderr, label string) {
+	t.Helper()
+	if !strings.Contains(stderr, label+"...") || !strings.HasSuffix(stderr, "\x1b[?25h") {
+		t.Fatalf("stderr = %q, want a cleared TTY spinner labeled %q", stderr, label)
+	}
+}
+
 func TestPollWikiAsyncTaskSuccessFirstPoll(t *testing.T) {
 	t.Parallel()
 
 	runtime, stderr := newWikiNodeDeleteRuntime(t, core.AsUser)
+	runtime.IO().StderrIsTerminal = true
 	status, ready, err := pollWikiAsyncTask(
 		context.Background(), runtime, "task_ok", "delete-node", 3, 0,
 		func(context.Context, string) (wikiAsyncTaskStatus, error) {
@@ -35,9 +43,7 @@ func TestPollWikiAsyncTaskSuccessFirstPoll(t *testing.T) {
 	if !ready || !status.Ready() {
 		t.Fatalf("ready = %v, status = %+v, want ready", ready, status)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want no progress output", stderr.String())
-	}
+	assertWikiTTYSpinner(t, stderr.String(), "Waiting for wiki delete-node task")
 }
 
 func TestPollWikiAsyncTaskFailureIsTerminal(t *testing.T) {

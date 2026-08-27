@@ -237,6 +237,9 @@ func pollWikiMoveToDriveTask(
 	runtime *common.RuntimeContext,
 	taskID string,
 ) (wikiMoveToDriveTaskStatus, bool, error) {
+	stopSpinner := runtime.StartSpinner("Waiting for wiki move-to-drive task")
+	defer stopSpinner()
+
 	lastStatus := wikiMoveToDriveTaskStatus{
 		TaskID: taskID,
 		Status: wikiMoveToDriveStatusProcessing,

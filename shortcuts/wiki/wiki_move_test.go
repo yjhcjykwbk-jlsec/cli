@@ -633,6 +633,7 @@ func TestRunWikiDocsToWikiMoveAsyncReady(t *testing.T) {
 	withSingleWikiMovePoll(t)
 
 	runtime, stderr := newWikiMoveRuntimeWithScopes(t, core.AsUser, "")
+	runtime.IO().StderrIsTerminal = true
 	client := &fakeWikiMoveClient{
 		docsResp: &wikiMoveDocsResponse{TaskID: "task_123"},
 		taskStatuses: []wikiMoveTaskStatus{{
@@ -665,9 +666,7 @@ func TestRunWikiDocsToWikiMoveAsyncReady(t *testing.T) {
 	if out["wiki_token"] != "wik_done" || out["title"] != "Roadmap" || out["status_msg"] != "success" {
 		t.Fatalf("async-ready output missing flattened fields: %#v", out)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want no async progress logs", stderr.String())
-	}
+	assertWikiTTYSpinner(t, stderr.String(), "Waiting for wiki move task")
 }
 
 func TestRunWikiDocsToWikiMoveAsyncTimeoutReturnsNextCommand(t *testing.T) {

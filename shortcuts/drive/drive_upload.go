@@ -343,6 +343,8 @@ func uploadFileMultipart(_ context.Context, runtime *common.RuntimeContext, file
 			"upload_prepare returned invalid data: upload_id=%q, block_size=%d, block_num=%d",
 			uploadID, blockSize, blockNum), meta)
 	}
+	stopSpinner := runtime.StartSpinner("Uploading multipart file")
+	defer stopSpinner()
 
 	// Step 2: Upload parts
 	meta.APIPath = driveUploadPartPath

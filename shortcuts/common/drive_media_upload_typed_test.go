@@ -120,6 +120,7 @@ func TestUploadDriveMediaAllTypedFileOpenFailure(t *testing.T) {
 // TestUploadDriveMediaMultipartTypedBuildsPreparePartsAndFinish verifies the complete multipart request sequence.
 func TestUploadDriveMediaMultipartTypedBuildsPreparePartsAndFinish(t *testing.T) {
 	runtime, reg := newDriveMediaUploadTestRuntime(t)
+	runtime.IO().StderrIsTerminal = true
 	withDriveMediaUploadWorkingDir(t, t.TempDir())
 
 	size := MaxDriveMediaUploadSinglePartSize + 1
@@ -164,6 +165,10 @@ func TestUploadDriveMediaMultipartTypedBuildsPreparePartsAndFinish(t *testing.T)
 	}
 	if fileToken != "file_typed_multi" {
 		t.Fatalf("fileToken = %q, want %q", fileToken, "file_typed_multi")
+	}
+	stderr := runtime.IO().ErrOut.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Uploading multipart media...") || !strings.HasSuffix(stderr, "\x1b[?25h") {
+		t.Fatalf("stderr = %q, want a cleared TTY multipart spinner", stderr)
 	}
 }
 

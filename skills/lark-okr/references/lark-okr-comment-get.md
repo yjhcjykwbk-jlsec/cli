@@ -1,11 +1,7 @@
 # okr +comment-get
 > **前置条件：** 先阅读 [lark-shared/SKILL.md](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则；
 
-根据评论 ID 获取单条 OKR 评论，查看评论正文、状态、评论对象、引用关系和划词信息。
-
-## 功能简介
-
-该 shortcut 封装 okr.comment.get，适合在列表查询得到 comment-id 后获取评论详情；不会改变评论状态。
+根据评论 ID 获取单条 OKR 评论，查看评论正文、状态、评论对象、引用关系和划词信息。本 shortcut 适合用于在编辑评论后确认其最终状态。
 
 ## 推荐命令
 

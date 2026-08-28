@@ -51,6 +51,17 @@ func TestCommentThreadsGroupSelectionAndSort(t *testing.T) {
 	}
 }
 
+func TestCommentThreadOutputUsesDetailShape(t *testing.T) {
+	threads := commentThreadOutput("simple", []Comment{
+		{ID: "2", CreateTime: "20", Selection: &CommentSelection{ID: "77"}, Content: &ContentBlock{}},
+		{ID: "1", CreateTime: "10", Selection: &CommentSelection{ID: "77"}, Content: &ContentBlock{}},
+		{ID: "3", CreateTime: "15", Content: &ContentBlock{}},
+	})
+	if len(threads) != 2 || len(threads[0]) != 2 || threads[0][0].ID != "1" || threads[0][1].ID != "2" || len(threads[1]) != 1 || threads[1][0].ID != "3" {
+		t.Fatalf("threads = %#v", threads)
+	}
+}
+
 func TestCommentCreateDryRunUsesWildcardSelection(t *testing.T) {
 	f, stdout, _, _ := cmdutil.TestFactory(t, commentTestConfig(t))
 	parent := &cobra.Command{Use: "okr"}

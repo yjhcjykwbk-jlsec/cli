@@ -5,7 +5,7 @@
 
 ## 功能简介
 
-该 shortcut 封装 okr.comment.delete，标记为 high-risk-write。真实执行必须显式传入 --yes；如果只是暂时结束讨论，应使用 +comment-solve。
+删除一条特定评论。本 shortcut 为高风险接口，删除的评论不可找回，如果只是暂时结束讨论，可使用 +comment-solve。
 
 ## 推荐命令
 ```bash

@@ -1,13 +1,7 @@
 # okr +comment-detail
 > **前置条件：** 先阅读 [lark-shared/SKILL.md](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则；
 
-获取指定 OKR 周期下 Cycle、Objective、KeyResult 和 Progress 的全部评论，并按评论对象和评论串整理。该 shortcut 是跨多个 OKR 接口的聚合查询。
-
-## 功能简介
-
-- 自动获取周期下的 Objective、KeyResult 和 Progress，再读取四类对象的评论。
-- 以 target ID 为第一层、评论串为第二层返回结果。
-- 同一 selection.id 的划词评论归为一个评论串；实体级评论各自是单条评论串。
+获取指定 OKR 周期下 Cycle、Objective、KeyResult 和 Progress 的全部评论，并按评论对象和评论串整理后按时间升序排列。该 shortcut 是跨多个 OKR 接口的聚合查询。
 
 ## 推荐命令
 

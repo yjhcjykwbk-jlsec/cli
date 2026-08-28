@@ -1,11 +1,7 @@
 # okr +comment-patch
 > **前置条件：** 先阅读 [lark-shared/SKILL.md](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则；
 
-修改指定评论的正文。评论目标、划词定位、引用关系和状态不能通过 patch 修改。
-
-## 功能简介
-
-该 shortcut 只更新 Comment.content，支持 simple（SemiPlainContent）和 richtext（ContentBlock）两种输入风格，并返回更新后的 Comment。
+修改指定评论的正文。评论目标、划词定位、引用关系则一经创建不可修改。
 
 ## 推荐命令
 
@@ -36,7 +32,7 @@ lark-cli okr +comment-patch --comment-id 7000000000000000004 --content '{"text":
 ## 工作流程
 
 1. 使用 [+comment-list](lark-okr-comment-list.md)、[+comment-detail](lark-okr-comment-detail.md) 或 [+comment-get](lark-okr-comment-get.md) 确认 comment-id 和目标评论。
-2. 根据正文复杂度选择 style：普通文本使用 simple；需要样式、图片、文档链接或精确 mention 时使用 richtext。
+2. 准备 content：通常建议使用 simple 格式，需要精确控制 @用户的位置时，可以使用 richtext 格式，参考 [ContentBlock 格式](lark-okr-contentblock.md)
 3. 执行 +comment-patch；真实写入前用 --dry-run 检查请求。
 4. 如果要解决或重新打开评论，不要使用 patch，改用 [+comment-solve](lark-okr-comment-solve-reopen.md) 或 [+comment-reopen](lark-okr-comment-solve-reopen.md)。
 

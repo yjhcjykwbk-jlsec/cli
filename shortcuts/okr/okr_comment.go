@@ -126,6 +126,10 @@ func commentOutput(style string, comments []Comment) []*RespComment {
 	return result
 }
 
+func commentThreadOutput(style string, comments []Comment) [][]*RespComment {
+	return responseCommentThreads(groupCommentThreads(comments), style)
+}
+
 func commentIDFlags() []common.Flag {
 	return []common.Flag{{Name: "comment-id", Desc: "comment ID (int64)", Required: true}, {Name: "user-id-type", Default: "open_id", Desc: "user ID type: open_id | union_id | user_id | user_key"}}
 }
@@ -173,7 +177,9 @@ var OKRListComments = common.Shortcut{
 		if err != nil {
 			return err
 		}
-		runtime.OutFormat(map[string]interface{}{"comments": commentOutput(runtime.Str("style"), comments), "has_more": hasMore, "page_token": token, "style": runtime.Str("style")}, nil, func(w io.Writer) { fmt.Fprintf(w, "Found %d comment(s)\n", len(comments)) })
+		runtime.OutFormat(map[string]interface{}{"comments": commentThreadOutput(runtime.Str("style"), comments), "has_more": hasMore, "page_token": token, "style": runtime.Str("style")}, nil, func(w io.Writer) {
+			fmt.Fprintf(w, "Found %d comment(s) in %d thread(s)\n", len(comments), len(groupCommentThreads(comments)))
+		})
 		return nil
 	},
 }

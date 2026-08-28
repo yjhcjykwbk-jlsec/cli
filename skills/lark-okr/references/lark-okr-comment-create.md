@@ -1,13 +1,7 @@
 # okr +comment-create
 > **前置条件：** 先阅读 [lark-shared/SKILL.md](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则；
 
-创建一条 OKR 评论，或回复实体级评论、挂入已有的划词评论串。评论正文支持 simple（SemiPlainContent）和 richtext（ContentBlock）两种输入风格。
-
-## 功能简介
-
-- Cycle/Progress 只支持实体级评论；可选 ref-comment-id 回复已有评论。
-- Objective/KeyResult 只支持划词评论，必须在 selected-text、select-all、ref-comment-id 三种方式中选择一种。
-- selected-text 创建新的划词；ref-comment-id 将评论加入被引用评论所在的划词串。
+创建一条 OKR 评论，或回复已有的评论
 
 ## 推荐命令
 
@@ -58,9 +52,10 @@ lark-cli okr +comment-create --target-type progress --target-id 3456789012345678
 2. 根据 target-type 选择评论形式：
    - cycle/progress：不传 selected-text 或 select-all；需要回复时传 ref-comment-id。
    - objective/key_result：在 selected-text、select-all、ref-comment-id 中选择且只能选择一个。
-3. 准备 content：simple 使用 SemiPlainContent JSON；需要样式、图片、文档链接或精确 mention 结构时使用 richtext 和 ContentBlock JSON。
+3. 准备 content：通常建议使用 simple 格式，需要精确控制 @用户的位置时，可以使用 richtext 格式，参考 [ContentBlock 格式](lark-okr-contentblock.md)
 4. 执行命令；真实写入前可以先使用 --dry-run 检查 URL、query 和 body。
-5. Objective/KeyResult 使用 selected-text 时，只填写正文中真实存在的纯文本片段；不要包含 mention 占位符。select-all 会根据正文 SemiPlainContent 纯文本长度生成等长的 *，触发服务端全文 fallback。
+5. 创建(而非回复) Objective/KeyResult 划词评论是，使用 selected-text 时，若用户未指定评论的具体位置，通常可以使用 select-all
+   - 若需使用 selected-text 精确选择划词选区时，只可传入正文中真实存在的连续纯文本片段；不要包含或跨越 mention 占位符。若 selected-text 无匹配内容，会 fallback 至选择全文。
 
 ## 输出
 
@@ -80,9 +75,9 @@ lark-cli okr +comment-create --target-type progress --target-id 3456789012345678
 ## 注意事项
 
 - Objective/KeyResult 的 ref-comment-id 只用于定位已有划词串，不会在新评论的 ref_comment_id 字段建立引用关系。
+- `--ref-comment-id` 必须传评论实体自身的 `id`，不能传 `selection.id`。`selection.id` 只用于识别同一个划词评论串；如果要回复某个划词串，应先从 +comment-list 或 +comment-detail 中找到该串内任意一条 Comment 的 `id`，再将这个 `id` 传给 `--ref-comment-id`。
 - Progress/Cycle 是实体级评论；Progress 的 ref-comment-id 会建立普通评论之间的引用关系。
-- simple 输入不支持 docs/images 字段；需要这些内容时使用 richtext。simple 的 mention 应按 SemiPlainContent 约定填写。
-- 评论创建是写操作，确认 target、正文和评论形式后再执行；不要把 select-all 当作普通的字面量选区。
+- 评论的 content 不支持 docs/images 字段，建议使用 simple 格式填写
 
 ## 参考
 

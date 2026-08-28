@@ -1,13 +1,7 @@
 # okr +comment-solve / +comment-reopen
 > **前置条件：** 先阅读 [lark-shared/SKILL.md](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则；
 
-解决或重新打开一条评论。实体级评论按单条评论处理；划词评论按 selection.id 影响整个评论串。
-
-## 功能简介
-
-- +comment-solve 将评论或评论串的状态改为 solved。
-- +comment-reopen 将已解决的评论或评论串恢复为 open。
-- 返回 affected_comments，包含本次实际受影响的全部评论。
+解决/重新打开一条评论。实体级评论按单条评论处理；划词评论则是操作整个评论串。
 
 ## 推荐命令
 

@@ -416,9 +416,10 @@ func firstPageHasMoreStub(reg *httpmock.Registry) {
 func TestAPIPaginate_LaterPageTransportErrorEmitsNoStdout(t *testing.T) {
 	ac, out, errOut, reg := newAPIPaginateTestHarness(t)
 	firstPageHasMoreStub(reg)
+	transportErr := errors.New("simulated transport failure")
 	reg.Register(&httpmock.Stub{
 		URL:   "/open-apis/test/v1/items",
-		Error: errors.New("simulated transport failure"),
+		Error: transportErr,
 	})
 
 	err := apiPaginate(context.Background(), ac, apiPaginateRequest(),
@@ -427,6 +428,15 @@ func TestAPIPaginate_LaterPageTransportErrorEmitsNoStdout(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("apiPaginate() error = nil, want transport error from page 2")
+	}
+	// The command layer is where the typed error turns into an exit code, so
+	// the contract has to hold here and not only inside the client: an error
+	// that arrived flattened or re-wrapped would still satisfy err != nil.
+	if got := errs.CategoryOf(err); got != errs.CategoryNetwork {
+		t.Errorf("errs.CategoryOf(err) = %q, want %q", got, errs.CategoryNetwork)
+	}
+	if !errors.Is(err, transportErr) {
+		t.Errorf("errors.Is(err, transportErr) = false; the cause did not survive the command layer; err = %v", err)
 	}
 	if got := out.String(); got != "" {
 		t.Fatalf("stdout bytes = %q, want empty on a failed pagination run", got)
@@ -450,6 +460,19 @@ func TestAPIPaginate_LaterPageBusinessErrorEmitsNoStdout(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("apiPaginate() error = nil, want business error from page 2")
+	}
+	// 230027 is in the codemeta table; asserting the classification rather than
+	// the message text is what proves the command layer still exits by category
+	// and not on some generic error.
+	if got := errs.CategoryOf(err); got != errs.CategoryAuthorization {
+		t.Errorf("errs.CategoryOf(err) = %q, want %q", got, errs.CategoryAuthorization)
+	}
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("errs.ProblemOf(err) = _, false; want a typed problem; err = %T: %v", err, err)
+	}
+	if p.Subtype != errs.SubtypeUserUnauthorized {
+		t.Errorf("subtype = %q, want %q", p.Subtype, errs.SubtypeUserUnauthorized)
 	}
 	if bytes.Contains(out.Bytes(), []byte(`"ok": true`)) {
 		t.Fatalf("failed pagination stdout contains a success envelope:\n%s", out.Bytes())

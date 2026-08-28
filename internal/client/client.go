@@ -393,17 +393,18 @@ func jsonKindOf(v interface{}) string {
 	}
 }
 
-// callPage is CallAPI plus the raw response. CallAPI deliberately drops the
-// *larkcore.ApiResp, and dropping it is precisely why the pagination loop could
-// not tell a 4xx/5xx page from a successful one: nothing below CallAPI reads the
-// HTTP status, so a gateway 502 whose JSON body carries no non-zero business
-// code arrived looking exactly like a normal page.
+// callPage is CallAPI plus the raw response, and is otherwise identical to it.
+// CallAPI deliberately drops the *larkcore.ApiResp, and dropping it is precisely
+// why the pagination loop could not tell a 4xx/5xx page from a successful one:
+// nothing below CallAPI reads the HTTP status, so a gateway 502 whose JSON body
+// carries no non-zero business code arrived looking exactly like a normal page.
 //
-// The parse-failure branch classifies by status first for the same reason
-// HandleResponse does (response.go): an unparseable body on an HTTP error is a
-// transport-level failure, not an internal decode bug, and reporting it as the
-// latter would give `--page-all` a different exit code than plain `api` for one
-// and the same response.
+// The parse-failure branch is kept in step with CallAPI rather than classifying
+// by status the way HandleResponse does. It cannot be reached in practice: the
+// SDK unmarshals the body inside DoAPI, so anything ParseJSONResponse would
+// reject has already failed there and returned an error with no response
+// attached. A body that is valid JSON but not a page object (a bare `null`)
+// parses fine and is handled in the loop instead.
 func (c *APIClient) callPage(ctx context.Context, request RawApiRequest) (interface{}, *larkcore.ApiResp, error) {
 	resp, err := c.DoAPI(ctx, request)
 	if err != nil {
@@ -411,9 +412,6 @@ func (c *APIClient) callPage(ctx context.Context, request RawApiRequest) (interf
 	}
 	result, parseErr := ParseJSONResponse(resp)
 	if parseErr != nil {
-		if resp.StatusCode >= 400 {
-			return nil, resp, httpStatusError(resp.StatusCode, resp.RawBody)
-		}
 		return nil, resp, WrapJSONResponseParseError(parseErr, resp.RawBody)
 	}
 	return result, resp, nil
@@ -460,8 +458,11 @@ func (c *APIClient) paginateLoop(ctx context.Context, request RawApiRequest, opt
 			return allResults, err
 		}
 
-		if resultMap, ok := result.(map[string]interface{}); ok {
-			code, _ := util.ToFloat64(resultMap["code"])
+		resultMap, isPageObject := result.(map[string]interface{})
+		codeIsUsable := false
+		if isPageObject {
+			var code float64
+			code, codeIsUsable = util.ToFloat64(resultMap["code"])
 			if code != 0 {
 				// Page 1 deliberately returns a nil error: the command layer's
 				// CheckResponse owns that case and dumps the raw response to
@@ -507,14 +508,23 @@ func (c *APIClient) paginateLoop(ctx context.Context, request RawApiRequest, opt
 		// empty or code-less first response is the caller's to interpret, and
 		// erroring on it would change what plain `api` already returns.
 		if page > 1 {
-			resultMap, isObject := result.(map[string]interface{})
-			if !isObject {
+			if !isPageObject {
 				fmt.Fprintf(c.ErrOut, "[page %d] response is not a JSON object, stopping pagination\n", page)
 				return allResults, errs.NewInternalError(errs.SubtypeInvalidResponse,
 					"page %d of a --page-all run returned %s instead of a page object", page, jsonKindOf(result))
 			}
-			if _, hasCode := resultMap["code"]; !hasCode {
-				fmt.Fprintf(c.ErrOut, "[page %d] response carries no code field, stopping pagination\n", page)
+			// The success test above reads only ToFloat64's value, and that value
+			// is 0 both for a real code 0 and for anything undecodable. Keying
+			// this guard on the field's presence would let `"code": null` through
+			// as a successful page; keying it on decodability is what actually
+			// separates "this page reported success" from "this page did not
+			// report anything we can read".
+			if !codeIsUsable {
+				fmt.Fprintf(c.ErrOut, "[page %d] response carries no usable code field, stopping pagination\n", page)
+				if raw, present := resultMap["code"]; present {
+					return allResults, errs.NewInternalError(errs.SubtypeInvalidResponse,
+						"page %d of a --page-all run returned a code field that is not a number (%s)", page, jsonKindOf(raw))
+				}
 				return allResults, errs.NewInternalError(errs.SubtypeInvalidResponse,
 					"page %d of a --page-all run returned an object with no code field", page)
 			}

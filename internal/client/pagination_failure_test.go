@@ -251,6 +251,16 @@ func TestPaginateAll_LaterPageNullBodyPropagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("PaginateAll() error = nil, want failure for an uninterpretable page 2")
 	}
+	// Asserting the subtype, not just that something failed: a bare error would
+	// satisfy the check above while exiting under a different code than the
+	// invalid-response contract this branch promises.
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("errs.ProblemOf(err) = _, false; want a typed problem; err = %T: %v", err, err)
+	}
+	if p.Subtype != errs.SubtypeInvalidResponse {
+		t.Errorf("subtype = %q, want %q", p.Subtype, errs.SubtypeInvalidResponse)
+	}
 }
 
 // Page 1 promised more data; a later page with no code field cannot be read as
@@ -266,6 +276,13 @@ func TestPaginateAll_LaterPageObjectWithoutCodePropagates(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("PaginateAll() error = nil, want failure for a page 2 carrying no code")
+	}
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("errs.ProblemOf(err) = _, false; want a typed problem; err = %T: %v", err, err)
+	}
+	if p.Subtype != errs.SubtypeInvalidResponse {
+		t.Errorf("subtype = %q, want %q", p.Subtype, errs.SubtypeInvalidResponse)
 	}
 }
 
@@ -362,16 +379,105 @@ func TestStreamPages_FailureReportsHowMuchWasStreamed(t *testing.T) {
 	ac, errBuf := newTestAPIClient(t, pageSeqTransport(
 		firstPageHasMore, businessFailure(230027, "user not authorized")))
 
+	var streamed []interface{}
 	_, _, err := ac.StreamPages(context.Background(), RawApiRequest{
 		Method: "GET", URL: "/open-apis/test", As: "bot",
-	}, func([]interface{}) error { return nil },
-		PaginationOptions{PageLimit: 0, PageDelay: -1, Identity: "bot"})
+	}, func(items []interface{}) error {
+		streamed = append(streamed, items...)
+		return nil
+	}, PaginationOptions{PageLimit: 0, PageDelay: -1, Identity: "bot"})
 
 	if err == nil {
 		t.Fatal("StreamPages() error = nil, want business error from page 2")
 	}
+	// The counts in the summary line are only meaningful if the items really
+	// reached the caller, so assert the emission itself rather than trusting
+	// the line to describe it.
+	if len(streamed) != 1 {
+		t.Fatalf("onItems received %d items, want the single page-1 item; got %#v", len(streamed), streamed)
+	}
+	if item, ok := streamed[0].(map[string]interface{}); !ok || item["id"] != "first" {
+		t.Errorf("streamed item = %#v, want the page-1 item {id: first}", streamed[0])
+	}
 	want := "[pagination] streamed 1 pages, 1 total items before the run failed"
 	if !strings.Contains(errBuf.String(), want) {
 		t.Errorf("ErrOut = %q, want it to contain %q", errBuf.String(), want)
+	}
+}
+
+// util.ToFloat64 returns (0, false) for anything that is not a number, and the
+// loop reads only the value — so a code that is present but undecodable looks
+// exactly like code 0. Checking the key's presence is not enough.
+func TestPaginateAll_LaterPageUndecodableCodePropagates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"null code", `{"code":null,"msg":"gateway error"}`},
+		{"string code", `{"code":"230027","msg":"user not authorized"}`},
+		{"object code", `{"code":{},"msg":"nonsense"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ac, _ := newTestAPIClient(t, pageSeqTransport(
+				firstPageHasMore, statusResponse(200, tc.body)))
+
+			_, err := ac.PaginateAll(context.Background(), RawApiRequest{
+				Method: "GET", URL: "/open-apis/test", As: "bot",
+			}, PaginationOptions{PageLimit: 0, PageDelay: -1, Identity: "bot"})
+
+			if err == nil {
+				t.Fatal("PaginateAll() error = nil, want failure for an undecodable code")
+			}
+			p, ok := errs.ProblemOf(err)
+			if !ok {
+				t.Fatalf("errs.ProblemOf(err) = _, false; want a typed problem; err = %T: %v", err, err)
+			}
+			if p.Subtype != errs.SubtypeInvalidResponse {
+				t.Errorf("subtype = %q, want %q", p.Subtype, errs.SubtypeInvalidResponse)
+			}
+		})
+	}
+}
+
+// callPage's parse-failure branch is written to match CallAPI rather than to
+// classify by HTTP status the way HandleResponse does, on the grounds that it
+// cannot be reached: the SDK unmarshals the body inside DoAPI, so a page whose
+// body ParseJSONResponse would reject has already failed there, with no
+// response to read a status from. These cases pin that reasoning. If the SDK
+// ever stops rejecting these bodies the branch becomes reachable and its
+// classification has to be revisited — which is exactly when this test breaks.
+//
+// A consequence worth stating: an unreadable body on a 5xx is reported as an
+// invalid response rather than a network failure. That is not a divergence
+// introduced here — DoAPI fails identically without --page-all, so plain `api`
+// reports the same thing for the same response.
+func TestPaginateAll_UnparseableLaterPageFailsInsideDoAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"truncated JSON on 200", 200, `{"code":0,`},
+		{"HTML on 502", 502, `<html>Bad Gateway</html>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ac, _ := newTestAPIClient(t, pageSeqTransport(
+				firstPageHasMore, statusResponse(tc.status, tc.body)))
+
+			_, err := ac.PaginateAll(context.Background(), RawApiRequest{
+				Method: "GET", URL: "/open-apis/test", As: "bot",
+			}, PaginationOptions{PageLimit: 0, PageDelay: -1, Identity: "bot"})
+
+			if err == nil {
+				t.Fatal("PaginateAll() error = nil, want an unparseable page 2 to fail")
+			}
+			p, ok := errs.ProblemOf(err)
+			if !ok {
+				t.Fatalf("errs.ProblemOf(err) = _, false; want a typed problem; err = %T: %v", err, err)
+			}
+			if p.Subtype != errs.SubtypeInvalidResponse {
+				t.Errorf("subtype = %q, want %q", p.Subtype, errs.SubtypeInvalidResponse)
+			}
+		})
 	}
 }

@@ -14,10 +14,17 @@ import (
 // PaginationOptions contains pagination control options.
 type PaginationOptions struct {
 	PageLimit int // max pages to fetch; 0 = unlimited (default: 10)
-	PageDelay int // ms, default 200
+	// PageDelay is the pause between pages in ms. Zero means "unset" and takes
+	// the 200ms default, so a caller that wants no pause at all — tests, mostly —
+	// passes a negative value: the loop sleeps only when the resolved delay is
+	// positive.
+	PageDelay int
 	// Identity is used when a later page's non-zero code is turned into a typed
-	// error. Both command entry points fill it from the request identity, so it
-	// is non-empty in practice; errclass falls back to "user" if it ever is.
+	// error. The cmd/api and cmd/service entry points both fill it from the
+	// request identity. shortcuts/common/runner.go passes the caller's opts
+	// through unchanged and adds no fallback, so a shortcut that omits it would
+	// arrive here empty; errclass then classifies as "user", which would give a
+	// bot the user-facing recovery hint. No shortcut calls those wrappers today.
 	Identity core.Identity
 }
 

@@ -458,3 +458,68 @@ func TestAPIPaginate_LaterPageBusinessErrorEmitsNoStdout(t *testing.T) {
 		t.Fatalf("stdout bytes = %q, want empty on a failed pagination run", got)
 	}
 }
+
+// The blocker shape at the command layer: a gateway 5xx carries no business
+// code, so before the status check it was accumulated as a page and the run
+// exited 0 with an ok:true envelope — the output #2477 reported.
+func TestAPIPaginate_LaterPageHTTPErrorEmitsNoStdout(t *testing.T) {
+	ac, out, errOut, reg := newAPIPaginateTestHarness(t)
+	firstPageHasMoreStub(reg)
+	reg.Register(&httpmock.Stub{
+		URL:    "/open-apis/test/v1/items",
+		Status: 502,
+		Body:   map[string]interface{}{"msg": "Bad Gateway"},
+	})
+
+	err := apiPaginate(context.Background(), ac, apiPaginateRequest(),
+		output.FormatJSON, "", out, errOut, "lark-cli api GET",
+		client.PaginationOptions{PageLimit: 0, PageDelay: -1})
+
+	if err == nil {
+		t.Fatal("apiPaginate() error = nil, want HTTP 502 from page 2")
+	}
+	// Asserting the category, not merely that something failed: a 502 body
+	// carrying no code is also an unreadable page, so the later-page guard
+	// would catch it too. Only the status branch classifies it as a network
+	// failure, which is what plain `api` reports for the same response and
+	// what makes the exit code agree across the two paths.
+	if got := errs.CategoryOf(err); got != errs.CategoryNetwork {
+		t.Errorf("errs.CategoryOf(err) = %q, want %q", got, errs.CategoryNetwork)
+	}
+	if bytes.Contains(out.Bytes(), []byte(`"ok": true`)) {
+		t.Fatalf("failed pagination stdout contains a success envelope:\n%s", out.Bytes())
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("stdout bytes = %q, want empty on a failed pagination run", got)
+	}
+}
+
+// The counterpart to the JSON cases, and the reason "a failed run writes no
+// stdout" is only true for the buffered formats. A streaming format has already
+// emitted the pages that succeeded by the time a later one fails; those lines
+// stay, by design (see apiPaginate's note that callers must use the exit code
+// to tell complete from partial output). What this change fixes is that the
+// exit code now actually says so.
+func TestAPIPaginate_LaterPageFailureKeepsStreamedStdout(t *testing.T) {
+	ac, out, errOut, reg := newAPIPaginateTestHarness(t)
+	firstPageHasMoreStub(reg)
+	reg.Register(&httpmock.Stub{
+		URL:    "/open-apis/test/v1/items",
+		Status: 502,
+		Body:   map[string]interface{}{"msg": "Bad Gateway"},
+	})
+
+	err := apiPaginate(context.Background(), ac, apiPaginateRequest(),
+		output.FormatNDJSON, "", out, errOut, "lark-cli api GET",
+		client.PaginationOptions{PageLimit: 0, PageDelay: -1})
+
+	if err == nil {
+		t.Fatal("apiPaginate() error = nil, want HTTP 502 from page 2")
+	}
+	if got := errs.CategoryOf(err); got != errs.CategoryNetwork {
+		t.Errorf("errs.CategoryOf(err) = %q, want %q", got, errs.CategoryNetwork)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"first"`)) {
+		t.Fatalf("streamed stdout = %q, want it to keep the page-1 item it already wrote", out.Bytes())
+	}
+}
